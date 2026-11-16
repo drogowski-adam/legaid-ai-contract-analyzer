@@ -1,10 +1,17 @@
-using LegAid.Api.Agents;
-using LegAid.Api.Configuration;
-using LegAid.Api.Endpoints;
+using LegAid.Api.Abstractions;
+using LegAid.Api.Infrastructure;
+using LegAid.Api.Infrastructure.Anonymization;
+using LegAid.Api.Infrastructure.Documents;
+using LegAid.Api.Infrastructure.Knowledge;
+using LegAid.Api.Logic;
+using LegAid.Api.Logic.ContractAnalysis;
+using LegAid.Api.Presentation.Endpoints;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
 using OpenAI;
 
+// Composition root: jedyne miejsce, które zna wszystkie warstwy i skleja je przez DI.
+// Warstwy: Model, Abstractions, Logic, Infrastructure, Presentation (opis w docs/ARCHITEKTURA.md).
 var builder = WebApplication.CreateBuilder(args);
 
 // User-secrets domyślnie ładują się tylko w Development. Gdy aplikacja startuje bez profilu
@@ -38,16 +45,25 @@ builder.Services
     .UseLogging();
 
 builder.Services.Configure<KnowledgeOptions>(builder.Configuration.GetSection(KnowledgeOptions.SectionName));
-builder.Services.AddSingleton(new KnowledgeBase(Path.Combine(AppContext.BaseDirectory, "Knowledge", "przepisy.txt")));
+builder.Services.AddSingleton<IKnowledgeSource>(
+    new FileKnowledgeSource(Path.Combine(AppContext.BaseDirectory, "Infrastructure", "Knowledge", "przepisy.txt")));
+
+builder.Services.AddSingleton<IAnonymizer, RegexAnonymizer>();
+builder.Services.AddSingleton<IDocumentTextExtractor, DocumentTextExtractor>();
+builder.Services.AddSingleton<AgentMessages>();
 
 builder.Services.AddScoped<ILegalAgent, LegalAgent>();
+builder.Services.AddScoped<ContractAnalystAgent>();
+builder.Services.AddScoped<ClauseReviewerAgent>();
+builder.Services.AddScoped<ReportVerifierAgent>();
+builder.Services.AddScoped<ContractAnalyzer>();
 
 builder.Services.AddOpenApi();
 builder.Services.AddProblemDetails();
 
 var app = builder.Build();
 
-app.Logger.LogInformation("Baza wiedzy: wczytano {Count} przepisów", app.Services.GetRequiredService<KnowledgeBase>().Count);
+app.Logger.LogInformation("Baza wiedzy: wczytano {Count} przepisów", app.Services.GetRequiredService<IKnowledgeSource>().GetAll().Count);
 
 app.UseExceptionHandler();
 app.UseStatusCodePages();
@@ -57,9 +73,12 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi(); // /openapi/v1.json
 }
 
-app.UseDefaultFiles(); // wwwroot/index.html pod adresem /
+// Prezentacja: czat z wwwroot/index.html pod adresem /. Folder zostaje w korzeniu projektu,
+// bo ASP.NET Core domyślnie serwuje i publikuje pliki statyczne właśnie z wwwroot.
+app.UseDefaultFiles();
 app.UseStaticFiles();
 
 app.MapAgentEndpoints();
+app.MapContractEndpoints();
 
 app.Run();
